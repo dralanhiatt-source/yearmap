@@ -25,6 +25,7 @@ body{padding:10px;}
 .btn.on{background:var(--ac);color:#fff;border-color:var(--ac);}
 .pill{font-size:10px;font-family:'DM Mono',monospace;padding:3px 8px;border-radius:20px;background:var(--s1);color:var(--tx2);border:0.5px solid var(--br);}
 .pill.ok{color:#4ecb71;border-color:#4ecb7144;}
+.pill.err{color:#ff6b6b;border-color:#ff6b6b44;}
 .psel{font-size:11px;padding:5px 8px;border-radius:6px;border:0.5px solid var(--br2);background:var(--s1);color:var(--tx);}
 .widgets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
 .widget{background:var(--s1);border:0.5px solid var(--br);border-radius:8px;padding:8px 12px;font-size:11px;font-family:'DM Mono',monospace;color:var(--tx2);min-width:120px;}
@@ -235,6 +236,9 @@ html,body{background:#fff!important;color:#000!important;padding:0!important;}
 </div>
 
 <script>
+const JSONBIN_API_KEY = '$2a$10$wmm6x55mIa8/16dJR0I.ZuNIpt2e06SMkHf/KkX5b2F4kEFQChptW';
+const JSONBIN_BASE = 'https://api.jsonbin.io/v3/b';
+const BIN_ID_KEY = 'yearmap_bin_id';
 const EKEY='dralan_ev_v3',JKEY='dralan_j_v3',NKEY='dralan_n_v3',RKEY='dralan_rem_v3';
 const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const MN_FULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -248,20 +252,53 @@ let mediaRecorder=null,audioChunks=[],isRecording=false;
 function dim(y,m){return new Date(y,m+1,0).getDate();}
 function dow(y,m,d){return new Date(y,m,d).getDay();}
 function today(){return new Date().toISOString().split('T')[0];}
-function badge(t,ok){const b=document.getElementById('syncPill');b.textContent=t;b.className='pill'+(ok?' ok':'');}
+function badge(t,ok){const b=document.getElementById('syncPill');b.textContent=t;b.className='pill'+(ok?' ok':t==='Error'?' err':'');}
+
+function getState(){return {events,journal,dayNotes,reminders};}
+function setState(s){if(Array.isArray(s.events))events=s.events;if(s.journal&&typeof s.journal==='object')journal=s.journal;if(s.dayNotes&&typeof s.dayNotes==='object')dayNotes=s.dayNotes;if(Array.isArray(s.reminders))reminders=s.reminders;}
+
+async function ensureBin(){
+  let binId=localStorage.getItem(BIN_ID_KEY);
+  if(!binId){
+    const resp=await fetch(JSONBIN_BASE,{method:'POST',headers:{'Content-Type':'application/json','X-Master-Key':JSONBIN_API_KEY,'X-Bin-Name':'yearmap'},body:JSON.stringify(getState())});
+    if(!resp.ok)throw new Error('Failed to create bin: '+resp.status);
+    const data=await resp.json();binId=data.metadata.id;localStorage.setItem(BIN_ID_KEY,binId);
+  }
+  return binId;
+}
 
 async function loadAll(){
+  badge('Syncing...',false);
+  // load local storage as fallback base
+  try{const l=localStorage.getItem(EKEY);if(l)events=JSON.parse(l);}catch(e){}
+  try{const l=localStorage.getItem(JKEY);if(l)journal=JSON.parse(l);}catch(e){}
+  try{const l=localStorage.getItem(NKEY);if(l)dayNotes=JSON.parse(l);}catch(e){}
+  try{const l=localStorage.getItem(RKEY);if(l)reminders=JSON.parse(l);}catch(e){}
   try{
-    const re=await window.storage.get(EKEY,true);if(re?.value)events=JSON.parse(re.value);else{const l=localStorage.getItem(EKEY);if(l)events=JSON.parse(l);}
-    const rj=await window.storage.get(JKEY,true);if(rj?.value)journal=JSON.parse(rj.value);else{const l=localStorage.getItem(JKEY);if(l)journal=JSON.parse(l);}
-    const rn=await window.storage.get(NKEY,true);if(rn?.value)dayNotes=JSON.parse(rn.value);else{const l=localStorage.getItem(NKEY);if(l)dayNotes=JSON.parse(l);}
-    const rr=await window.storage.get(RKEY,true);if(rr?.value)reminders=JSON.parse(rr.value);else{const l=localStorage.getItem(RKEY);if(l)reminders=JSON.parse(l);}
-    badge('Synced ✓',true);
-  }catch(e){badge('Local',false);}
+    const binId=await ensureBin();
+    const resp=await fetch(`${JSONBIN_BASE}/${binId}/latest`,{headers:{'X-Master-Key':JSONBIN_API_KEY}});
+    if(!resp.ok)throw new Error('Fetch failed: '+resp.status);
+    const data=await resp.json();setState(data.record);
+    badge('Saved ✓',true);
+  }catch(e){badge('Local',false);console.warn('JSONBin load:',e);}
   render();renderList();loadJDay();renderReminders();loadWidgets();
 }
 
-async function saveK(key,data){const d=JSON.stringify(data);try{localStorage.setItem(key,d);}catch(e){}try{await window.storage.set(key,d,true);badge('Synced ✓',true);}catch(e){badge('Local',false);}}
+async function saveToCloud(){
+  badge('Syncing...',false);
+  try{
+    const binId=await ensureBin();
+    const resp=await fetch(`${JSONBIN_BASE}/${binId}`,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':JSONBIN_API_KEY},body:JSON.stringify(getState())});
+    if(!resp.ok)throw new Error('Save failed: '+resp.status);
+    badge('Saved ✓',true);
+  }catch(e){badge('Error',false);console.warn('JSONBin save:',e);}
+}
+
+async function saveK(key,data){
+  const d=JSON.stringify(data);
+  try{localStorage.setItem(key,d);}catch(e){}
+  await saveToCloud();
+}
 async function syncAll(){badge('Syncing...',false);await loadAll();}
 
 async function loadWidgets(){
